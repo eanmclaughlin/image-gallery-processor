@@ -121,12 +121,27 @@ func main() {
 
 			// all appropriate images should be jpg, skip anything else
 			if ext == ".jpg" {
+				var thumbnail *vips.ImageRef
+				var display *vips.ImageRef
+
+				jpgExportParams := vips.NewJpegExportParams()
+				jpgExportParams.Quality = 75
+				jpgExportParams.Interlace = true
+				jpgExportParams.OptimizeCoding = true
+				jpgExportParams.SubsampleMode = vips.VipsForeignSubsampleAuto
+				jpgExportParams.TrellisQuant = true
+				jpgExportParams.OvershootDeringing = true
+				jpgExportParams.OptimizeScans = true
+				jpgExportParams.QuantTable = 3
+
 				// the grid thumbnail
 				thumbnail, err := vips.NewThumbnailFromFile(fullPath, math.MaxInt16, thumbnailHeight, vips.InterestingNone)
 				if err != nil {
 					panic(err)
 				}
-				thumbnailBytes, _, err := thumbnail.ExportNative()
+				defer thumbnail.Close()
+
+				thumbnailBytes, _, err := thumbnail.ExportJpeg(jpgExportParams)
 				if err != nil {
 					panic(err)
 				}
@@ -141,8 +156,9 @@ func main() {
 					if err != nil {
 						panic(err)
 					}
+					defer display.Close()
 
-					displayBytes, _, err := display.ExportNative()
+					displayBytes, _, err := display.ExportJpeg(jpgExportParams)
 					if err != nil {
 						panic(err)
 					}
