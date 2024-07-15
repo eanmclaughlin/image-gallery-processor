@@ -20,6 +20,8 @@ type ImageData struct {
 	Width       int    `json:"width"`
 	Height      int    `json:"height"`
 	Tiles       string `json:"tiles,omitempty"`
+	MaxWidth    int    `json:"max_width,omitempty"`
+	MaxHeight   int    `json:"max_height,omitempty"`
 }
 
 var logger = log.Default()
@@ -155,8 +157,16 @@ func main() {
 				if image.Width() > tileMinDimension || image.Height() > tileMinDimension {
 					logger.Printf("Generating tiles for %s", imageName)
 
+					// Update width and height to use slide image size, move full image size to max width and max height
+					imageData.MaxWidth = imageData.Width
+					imageData.MaxHeight = imageData.Height
+					if display != nil {
+						imageData.Height = display.Height()
+						imageData.Width = display.Width()
+					}
+
 					// Shell out because govips doesn't have a dzsave binding
-					vipsDzCmd := exec.Command("vips", "dzsave", fullPath, filepath.Join(currentDir, imageName), "--depth", "onetile")
+					vipsDzCmd := exec.Command("vips", "dzsave", fullPath, filepath.Join(currentDir, imageName), "--centre")
 					err := vipsDzCmd.Run()
 					if err != nil {
 						panic(err)
