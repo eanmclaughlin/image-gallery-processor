@@ -184,28 +184,31 @@ func main() {
 	}
 
 	for dir, imageData := range imageDataMap {
-		logger.Printf("Writing JSON to %s/images.json", dir)
+		writeDirImageData(dir, imageData)
+	}
+}
 
-		logger.Printf("Opening JSON file %s", dir)
-		jsonFile, err := os.Create(filepath.Join(dir, "images.json"))
+func writeDirImageData(dir string, imageData map[string]*ImageData) {
+	logger.Printf("Writing JSON to %s/images.json", dir)
 
-		defer func() {
-			logger.Printf("Closing JSON file for %s", dir)
-			jsonFile.Close()
-		}()
+	logger.Printf("Opening JSON file %s", dir)
+	jsonFile, err := os.Create(filepath.Join(dir, "images.json"))
 
-		imageJson, err := json.MarshalIndent(imageData, "", "  ")
+	defer func() {
+		logger.Printf("Closing JSON file for %s", dir)
+		err := jsonFile.Close()
 		if err != nil {
-			panic(err)
+			logger.Println(err)
+			return
 		}
-		_, err = jsonFile.Write(imageJson)
-		if err != nil {
-			panic(err)
-		}
+	}()
 
-		err = jsonFile.Close()
-		if err != nil {
-			logger.Println("Error closing file:", err)
-		}
+	imageJson, err := json.MarshalIndent(imageData, "", "  ")
+	if err != nil {
+		panic(err)
+	}
+	_, err = jsonFile.Write(imageJson)
+	if err != nil {
+		panic(err)
 	}
 }
