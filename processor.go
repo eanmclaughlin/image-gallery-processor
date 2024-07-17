@@ -89,115 +89,27 @@ func main() {
 			if ext == ".png" {
 				logger.Printf("Retyping image to jpg: %s", imageName)
 
+				err := convertToJPG(imageName, currentDir, image)
+				if err != nil {
+					return err
+				}
 				ext = ".jpg"
-				// vips image to jpg
-				imageFile := fmt.Sprintf("%s%s", imageName, ext)
-				path := filepath.Join(currentDir, imageFile)
-
-				// for web viewing/consistency with generated tiles
-				err := image.ToColorSpace(vips.InterpretationSRGB)
-				if err != nil {
-					panic(err)
-				}
-
-				jpgImageBytes, _, err := image.ExportJpeg(vips.NewJpegExportParams())
-				if err != nil {
-					panic(err)
-				}
-
-				err = os.WriteFile(path, jpgImageBytes, 0644)
-				if err != nil {
-					panic(err)
-				}
 			}
 
 			thumbnailPath := filepath.Join(currentDir, imageName+"-thumbnail"+ext)
 			displayPath := filepath.Join(currentDir, imageName+"-display"+ext)
 			fullPath := filepath.Join(currentDir, imageName+ext)
 
-			imageData.DisplayPath = displayPath
-			imageData.FullPath = fullPath
-			imageData.ThumbPath = thumbnailPath
+			imageData.ThumbPath = thumbnailPath // imageName + "-thumbnail" + ext
+			imageData.DisplayPath = displayPath // imageName + "-display" + ext
+			imageData.FullPath = fullPath       // imageName + ext
+
 			imageData.Height = image.Height()
 			imageData.Width = image.Width()
 
 			// all appropriate images should be jpg, skip anything else
 			if ext == ".jpg" {
-				var thumbnail *vips.ImageRef
-				var display *vips.ImageRef
-
-				jpgExportParams := vips.NewJpegExportParams()
-				jpgExportParams.Quality = 75
-				jpgExportParams.Interlace = true
-				jpgExportParams.OptimizeCoding = true
-				jpgExportParams.SubsampleMode = vips.VipsForeignSubsampleAuto
-				jpgExportParams.TrellisQuant = true
-				jpgExportParams.OvershootDeringing = true
-				jpgExportParams.OptimizeScans = true
-				jpgExportParams.QuantTable = 3
-
-				// the grid thumbnail
-				thumbnail, err := vips.NewThumbnailFromFile(fullPath, math.MaxInt16, thumbnailHeight, vips.InterestingNone)
-				if err != nil {
-					panic(err)
-				}
-				defer thumbnail.Close()
-
-				thumbnailBytes, _, err := thumbnail.ExportJpeg(jpgExportParams)
-				if err != nil {
-					panic(err)
-				}
-				err = os.WriteFile(thumbnailPath, thumbnailBytes, 0644)
-				if err != nil {
-					panic(err)
-				}
-
-				// the slide image
-				if image.Width() > slideHeight || image.Height() > slideHeight {
-					display, err := vips.NewThumbnailFromFile(fullPath, math.MaxInt16, slideHeight, vips.InterestingNone)
-					if err != nil {
-						panic(err)
-					}
-					defer display.Close()
-
-					displayBytes, _, err := display.ExportJpeg(jpgExportParams)
-					if err != nil {
-						panic(err)
-					}
-
-					err = os.WriteFile(displayPath, displayBytes, 0644)
-					if err != nil {
-						panic(err)
-					}
-				}
-
-				// generate tiles if necessary
-				if image.Width() > tileMinDimension || image.Height() > tileMinDimension {
-					logger.Printf("Generating tiles for %s", imageName)
-
-					// Update width and height to use slide image size, move full image size to max width and max height
-					imageData.MaxWidth = imageData.Width
-					imageData.MaxHeight = imageData.Height
-					if display != nil {
-						imageData.Height = display.Height()
-						imageData.Width = display.Width()
-					}
-
-					// Shell out because govips doesn't have a dzsave binding
-					vipsDzCmd := exec.Command("vips", "dzsave", fullPath, filepath.Join(currentDir, imageName), "--centre")
-					err := vipsDzCmd.Run()
-					if err != nil {
-						panic(err)
-					}
-
-					imageData.Tiles = filepath.Join(currentDir, imageName+"_files")
-
-					// delete the unnecessary generated meta files
-					err = os.Remove(filepath.Join(currentDir, imageName+".dzi"))
-					if err != nil {
-						logger.Println(err)
-					}
-				}
+				processImage(image, imageName, imageData, currentDir)
 			}
 
 			imageDataMap[currentDir][imageName] = &imageData
@@ -213,6 +125,128 @@ func main() {
 
 	for dir, imageData := range imageDataMap {
 		writeDirImageData(dir, imageData)
+	}
+}
+
+func convertToJPG(imageName string, currentDir string, image *vips.ImageRef) error {
+	ext := ".jpg"
+	// vips image to jpg
+	imageFile := fmt.Sprintf("%s%s", imageName, ext)
+	path := filepath.Join(currentDir, imageFile)
+
+	// for web viewing/consistency with generated tiles
+	err := image.ToColorSpace(vips.InterpretationSRGB)
+	if err != nil {
+		return err
+	}
+
+	jpgImageBytes, _, err := image.ExportJpeg(vips.NewJpegExportParams())
+	if err != nil {
+		return err
+	}
+
+	err = os.WriteFile(path, jpgImageBytes, 0644)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func processImage(image *vips.ImageRef, imageName string, imageData ImageData, currentDir string) {
+	var display *vips.ImageRef
+
+	jpgExportParams := vips.NewJpegExportParams()
+	jpgExportParams.Quality = 75
+	jpgExportParams.Interlace = true
+	jpgExportParams.OptimizeCoding = true
+	jpgExportParams.SubsampleMode = vips.VipsForeignSubsampleAuto
+	jpgExportParams.TrellisQuant = true
+	jpgExportParams.OvershootDeringing = true
+	jpgExportParams.OptimizeScans = true
+	jpgExportParams.QuantTable = 3
+
+	// the grid thumbnail
+	err := generateThumbnail(imageData.FullPath, jpgExportParams, imageData.ThumbPath)
+	if err != nil {
+		panic(err)
+	}
+
+	// the slide image
+	if image.Width() > slideHeight || image.Height() > slideHeight {
+		display, err = generateSlideImage(imageData.FullPath, jpgExportParams, imageData.DisplayPath)
+		if err != nil {
+			panic(err)
+		}
+	}
+
+	// generate tiles if necessary
+	if image.Width() > tileMinDimension || image.Height() > tileMinDimension {
+		generateImageTiles(imageName, imageData, display, imageData.FullPath, currentDir)
+	}
+}
+
+func generateThumbnail(fullPath string, jpgExportParams *vips.JpegExportParams, thumbnailPath string) error {
+	thumbnail, err := vips.NewThumbnailFromFile(fullPath, math.MaxInt16, thumbnailHeight, vips.InterestingNone)
+	if err != nil {
+		return err
+	}
+	defer thumbnail.Close()
+
+	thumbnailBytes, _, err := thumbnail.ExportJpeg(jpgExportParams)
+	if err != nil {
+		return err
+	}
+	err = os.WriteFile(thumbnailPath, thumbnailBytes, 0644)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func generateSlideImage(fullPath string, jpgExportParams *vips.JpegExportParams, displayPath string) (*vips.ImageRef, error) {
+	display, err := vips.NewThumbnailFromFile(fullPath, math.MaxInt16, slideHeight, vips.InterestingNone)
+	if err != nil {
+		return nil, err
+	}
+	defer display.Close()
+
+	displayBytes, _, err := display.ExportJpeg(jpgExportParams)
+	if err != nil {
+		return nil, err
+	}
+
+	err = os.WriteFile(displayPath, displayBytes, 0644)
+	if err != nil {
+		return nil, err
+	}
+	return display, nil
+}
+
+func generateImageTiles(imageName string, imageData ImageData, display *vips.ImageRef, fullPath string, currentDir string) {
+	logger.Printf("Generating tiles for %s", imageName)
+
+	// Update width and height to use slide image size, move full image size to max width and max height
+	imageData.MaxWidth = imageData.Width
+	imageData.MaxHeight = imageData.Height
+	if display != nil {
+		imageData.Height = display.Height()
+		imageData.Width = display.Width()
+	}
+
+	// Shell out because govips doesn't have a dzsave binding
+	vipsDzCmd := exec.Command("vips", "dzsave", fullPath, filepath.Join(currentDir, imageName), "--centre")
+	err := vipsDzCmd.Run()
+	if err != nil {
+		panic(err)
+	}
+
+	imageData.Tiles = filepath.Join(currentDir, imageName+"_files") // imageName + "_files"
+
+	// delete the unnecessary generated meta files
+	err = os.Remove(filepath.Join(currentDir, imageName+".dzi"))
+	if err != nil {
+		logger.Println(err)
 	}
 }
 
