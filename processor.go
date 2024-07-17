@@ -112,30 +112,6 @@ func buildImageList(root string, imageDataMap map[string]map[string]*ImageData, 
 	return nil
 }
 
-func convertToJPG(imageData *ImageData, image *vips.ImageRef) error {
-	ext := ".jpg"
-	// vips image to jpg
-	imageFile := fmt.Sprintf("%s%s", imageData.name, ext)
-	path := filepath.Join(imageData.FullPath, imageFile)
-
-	// for web viewing/consistency with generated tiles
-	err := image.ToColorSpace(vips.InterpretationSRGB)
-	if err != nil {
-		return err
-	}
-
-	jpgImageBytes, _, err := image.ExportJpeg(vips.NewJpegExportParams())
-	if err != nil {
-		return err
-	}
-
-	err = os.WriteFile(path, jpgImageBytes, 0644)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
 func processImage(imageData *ImageData) {
 	jpgExportParams := &vips.JpegExportParams{
 		StripMetadata:      true,
@@ -161,7 +137,7 @@ func processImage(imageData *ImageData) {
 	if filepath.Ext(imageData.path) == ".png" {
 		logger.Printf("Retyping image to jpg: %s", imageData.path)
 
-		err := convertToJPG(imageData, image)
+		err := convertToJPG(imageData, image, jpgExportParams)
 		if err != nil {
 			panic(err)
 		}
@@ -196,6 +172,30 @@ func processImage(imageData *ImageData) {
 	if image.Width() > tileMinDimension || image.Height() > tileMinDimension {
 		generateImageTiles(imageData)
 	}
+}
+
+func convertToJPG(imageData *ImageData, image *vips.ImageRef, jpegExportParams *vips.JpegExportParams) error {
+	ext := ".jpg"
+	// vips image to jpg
+	jpgFile := fmt.Sprintf("%s%s", imageData.name, ext)
+	path := filepath.Join(imageData.FullPath, jpgFile)
+
+	// for web viewing/consistency with generated tiles
+	err := image.ToColorSpace(vips.InterpretationSRGB)
+	if err != nil {
+		return err
+	}
+
+	jpgImageBytes, _, err := image.ExportJpeg(jpegExportParams)
+	if err != nil {
+		return err
+	}
+
+	err = os.WriteFile(path, jpgImageBytes, 0644)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func generateThumbnail(imageData *ImageData, jpgExportParams *vips.JpegExportParams) error {
