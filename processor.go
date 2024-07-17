@@ -11,7 +11,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 )
 
 type ImageData struct {
@@ -41,75 +43,95 @@ func main() {
 	root := flag.Args()[0]
 
 	var imageDataMap = map[string]map[string]*ImageData{}
-	var imageDataChan = make(chan *ImageData, 100)
+	var results = make(chan *ImageData, 100)
 
 	logger.Printf("Building image file list...")
-	err := buildImageList(root, imageDataMap, imageDataChan)
-	if err != nil {
-		return
-	}
+
+	images, errc := buildImageList(root)
 
 	vips.Startup(nil)
 	vips.LoggingSettings(nil, vips.LogLevelMessage)
 	defer vips.Shutdown()
 
-	for imageData := range imageDataChan {
-		logger.Println(imageData.path)
+	var wg sync.WaitGroup
+	for i := 0; i < runtime.GOMAXPROCS(0); i++ {
+		wg.Add(1)
+		go func() {
+			processor(i, images, results)
+			wg.Done()
+		}()
+	}
 
-		processImage(imageData)
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
 
-		imageDataMap[filepath.Dir(imageData.path)][imageData.name] = imageData
+	for result := range results {
+		resultDir := filepath.Dir(result.path)
+		if _, exists := imageDataMap[resultDir]; !exists {
+			imageDataMap[resultDir] = map[string]*ImageData{}
+		}
+		imageDataMap[resultDir][result.name] = result
 	}
 
 	for dir, imageData := range imageDataMap {
-		writeDirImageData(dir, imageData)
+		go writeDirImageData(dir, imageData)
+	}
+
+	if err := <-errc; err != nil {
+		logger.Fatal(err)
 	}
 }
 
-func buildImageList(root string, imageDataMap map[string]map[string]*ImageData, imageDataChan chan *ImageData) error {
+func buildImageList(root string) (<-chan *ImageData, <-chan error) {
 	skipFileNames := []string{".DS_Store", "thumbnail", "display", "html", "dzi", "json", "xml"}
+	images := make(chan *ImageData, 100)
+	errc := make(chan error, 1)
 
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		for _, skipFileName := range skipFileNames {
-			// don't process non-images or already generated images
-			if strings.Contains(d.Name(), skipFileName) {
+	go func() {
+		defer close(images)
+		errc <- filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			for _, skipFileName := range skipFileNames {
+				// don't process non-images or already generated images
+				if strings.Contains(d.Name(), skipFileName) {
+					return nil
+				}
+			}
+
+			if d.IsDir() {
+				// skip dz tiles generated externally or previously
+				if strings.HasSuffix(d.Name(), "_files") {
+					return filepath.SkipDir
+				}
+				// nothing else to do with directories
 				return nil
-			}
-		}
+			} else {
+				ext := filepath.Ext(d.Name())
+				name := strings.TrimSuffix(d.Name(), ext)
 
-		if d.IsDir() {
-			// skip dz tiles generated externally or previously
-			if strings.HasSuffix(d.Name(), "_files") {
-				return filepath.SkipDir
-			}
+				var imageData = ImageData{
+					path: path,
+					name: name,
+				}
 
-			// new directory, create image data sub map
-			if _, exists := imageDataMap[path]; !exists {
-				imageDataMap[path] = map[string]*ImageData{}
+				images <- &imageData
 			}
 
-			// nothing else to do with directories
 			return nil
-		} else {
-			ext := filepath.Ext(d.Name())
-			name := strings.TrimSuffix(d.Name(), ext)
+		})
+	}()
 
-			var imageData = ImageData{
-				path: path,
-				name: name,
-			}
+	return images, errc
+}
 
-			imageDataChan <- &imageData
-		}
+func processor(i int, images <-chan *ImageData, results chan<- *ImageData) {
+	for image := range images {
+		logger.Printf("%d - %s", i, image.path)
 
-		return nil
-	})
-	if err != nil {
-		fmt.Println(err)
-		return err
+		processImage(image)
+		results <- image
 	}
-	close(imageDataChan)
-	return nil
 }
 
 func processImage(imageData *ImageData) {
@@ -148,30 +170,30 @@ func processImage(imageData *ImageData) {
 	imageData.DisplayPath = filepath.Join(dir, imageData.name+"-display"+ext)
 	imageData.FullPath = filepath.Join(dir, imageData.name+ext)
 
+	// these get updated if a lower-res slide image is generated
 	imageData.Height = image.Height()
-	imageData.MaxHeight = image.Height()
-
 	imageData.Width = image.Width()
+
+	// these are for the deepzoom plugin
+	imageData.MaxHeight = image.Height()
 	imageData.MaxWidth = image.Width()
 
+	var wg sync.WaitGroup
+
 	// the grid thumbnail
-	err = generateThumbnail(imageData, jpgExportParams)
-	if err != nil {
-		panic(err)
-	}
+	go generateThumbnail(&wg, imageData, jpgExportParams)
 
 	// the slide image
 	if image.Width() > slideHeight || image.Height() > slideHeight {
-		err = generateSlideImage(imageData, jpgExportParams)
-		if err != nil {
-			panic(err)
-		}
+		go generateSlideImage(&wg, imageData, jpgExportParams)
 	}
 
 	// generate tiles if necessary
 	if image.Width() > tileMinDimension || image.Height() > tileMinDimension {
-		generateImageTiles(imageData)
+		go generateImageTiles(&wg, imageData)
 	}
+
+	wg.Wait()
 }
 
 func convertToJPG(imageData *ImageData, image *vips.ImageRef, jpegExportParams *vips.JpegExportParams) error {
@@ -198,7 +220,10 @@ func convertToJPG(imageData *ImageData, image *vips.ImageRef, jpegExportParams *
 	return nil
 }
 
-func generateThumbnail(imageData *ImageData, jpgExportParams *vips.JpegExportParams) error {
+func generateThumbnail(wg *sync.WaitGroup, imageData *ImageData, jpgExportParams *vips.JpegExportParams) error {
+	wg.Add(1)
+	defer wg.Done()
+
 	thumbnail, err := vips.NewThumbnailFromFile(imageData.FullPath, math.MaxInt16, thumbnailHeight, vips.InterestingNone)
 	if err != nil {
 		return err
@@ -217,7 +242,10 @@ func generateThumbnail(imageData *ImageData, jpgExportParams *vips.JpegExportPar
 	return nil
 }
 
-func generateSlideImage(imageData *ImageData, jpgExportParams *vips.JpegExportParams) error {
+func generateSlideImage(wg *sync.WaitGroup, imageData *ImageData, jpgExportParams *vips.JpegExportParams) error {
+	wg.Add(1)
+	defer wg.Done()
+
 	display, err := vips.NewThumbnailFromFile(imageData.FullPath, math.MaxInt16, slideHeight, vips.InterestingNone)
 	if err != nil {
 		return err
@@ -239,7 +267,10 @@ func generateSlideImage(imageData *ImageData, jpgExportParams *vips.JpegExportPa
 	return nil
 }
 
-func generateImageTiles(imageData *ImageData) {
+func generateImageTiles(wg *sync.WaitGroup, imageData *ImageData) {
+	wg.Add(1)
+	defer wg.Done()
+
 	logger.Printf("Generating tiles for %s", imageData.path)
 
 	// Shell out because govips doesn't have a dzsave binding
@@ -260,7 +291,7 @@ func generateImageTiles(imageData *ImageData) {
 }
 
 func writeDirImageData(dir string, imageData map[string]*ImageData) {
-	logger.Printf("Writing JSON to %s/images.json", dir)
+	logger.Printf("Saving JSON to %s/images.json", dir)
 
 	logger.Printf("Opening JSON file %s", dir)
 	jsonFile, err := os.Create(filepath.Join(dir, "images.json"))
