@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"github.com/davidbyttow/govips/v2/vips"
 	"io/fs"
@@ -31,6 +32,11 @@ const slideHeight = 2000
 const tileMinDimension = 4100
 
 func main() {
+	flag.Parse()
+	if len(flag.Args()) != 1 {
+		panic("Must provide a directory")
+	}
+	dir := flag.Args()[0]
 	skipFileNames := []string{".DS_Store", "thumbnail", "display", "html", "dzi", "json", "xml"}
 	//imageFileSuffixes := []string{".png", ".jpg", ".jpeg"}
 	//stripDimsRegex := regexp.MustCompile(`-\d{4,5} x \d{4,5}`)
@@ -43,7 +49,7 @@ func main() {
 	vips.LoggingSettings(nil, vips.LogLevelMessage)
 	defer vips.Shutdown()
 
-	err = filepath.WalkDir(".", func(path string, d fs.DirEntry, err error) error {
+	err = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		for _, skipFileName := range skipFileNames {
 			// don't process non-images or already generated images
 			if strings.Contains(d.Name(), skipFileName) {
@@ -53,10 +59,6 @@ func main() {
 		logger.Println(path)
 
 		if d.IsDir() {
-			if d.Name() == "." {
-				return nil
-			}
-
 			// skip dz tiles generated externally or previously
 			if d.IsDir() && strings.HasSuffix(d.Name(), "_files") {
 				return filepath.SkipDir
